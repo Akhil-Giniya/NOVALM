@@ -1,226 +1,370 @@
----
-
 # 📄 Product Requirements Document (PRD)
 
-## Product Name: **NovaLM** (placeholder)
+## Product: **NovaLM vNext**
+
+### Category: Autonomous Coding & Research Agent Platform
 
 ---
 
-## 1. Overview
+## 1. Product Vision
 
-### 1.1 Purpose
+### 1.1 Vision Statement
 
-NovaLM is a general-purpose Large Language Model designed to understand, generate, and reason over human language. The product aims to provide **accurate, controllable, and scalable** language intelligence via API and web interfaces for developers, businesses, and researchers.
+NovaLM is an **autonomous coding and research agent platform** designed to outperform state-of-the-art coding assistants and senior human engineers in **complex software engineering tasks**, within defined domains, through **tool execution, planning, evaluation, and long-term memory**.
 
-### 1.2 Problem Statement
-
-Existing LLM solutions often suffer from:
-
-* High cost and limited customization
-* Lack of transparency and control
-* Over-generalization with poor domain grounding
-* Dependency on closed ecosystems
-
-NovaLM aims to solve these issues by offering **modular intelligence**, **configurable behavior**, and **developer-first APIs**.
+NovaLM is **not a chatbot**.
+It is a **compound AI system** that reasons, acts, evaluates, and improves over time.
 
 ---
 
-## 2. Goals & Success Metrics
+## 2. Problem Statement
 
-### 2.1 Primary Goals
+Current LLM-based coding tools (e.g., ChatGPT, Claude Code, Copilot):
 
-* Deliver high-quality text generation and reasoning
-* Provide safe and controllable responses
-* Support real-time inference at scale
-* Enable easy integration via APIs
+* Primarily **respond**, they do not **act**
+* Lack persistent long-term memory
+* Cannot autonomously run experiments
+* Do not self-evaluate rigorously
+* Depend heavily on human steering
 
-### 2.2 Success Metrics (KPIs)
+PhD-level human engineers outperform these tools not because they “know more code”, but because they:
 
-| Metric             | Target                         |
-| ------------------ | ------------------------------ |
-| Response latency   | < 800 ms                       |
-| Hallucination rate | < 5%                           |
-| API uptime         | 99.9%                          |
-| Token cost         | 30–50% cheaper than market avg |
-| Developer adoption | 10k+ active users in 6 months  |
+* Plan
+* Design systems
+* Run experiments
+* Learn from failure
+* Accumulate experience
+
+NovaLM aims to **systematize these capabilities**.
 
 ---
 
 ## 3. Target Users
 
-### 3.1 User Personas
+### 3.1 Primary Users
 
-1. **Developers** – integrate LLM into apps (chatbots, tools)
-2. **Startups** – AI features without training models
-3. **Researchers** – experimentation & evaluation
-4. **Enterprises** – internal knowledge & automation
+* Research engineers
+* Systems engineers
+* ML infrastructure teams
+* Advanced individual developers
+* Internal R&D teams
 
----
+### 3.2 Non-Target Users
 
-## 4. Key Features
-
-### 4.1 Core Capabilities
-
-* Natural language understanding (NLU)
-* Text generation & completion
-* Question answering
-* Summarization
-* Code generation (basic → advanced)
-* Reasoning & chain-of-thought (controlled)
-
-### 4.2 Advanced Features
-
-* System prompt control
-* Temperature & sampling controls
-* Context window management
-* Tool / function calling
-* Role-based responses (system, user, assistant)
-* Safety & moderation layer
+* Casual chat users
+* Creative writing users
+* General-purpose consumer AI users
 
 ---
 
-## 5. Functional Requirements
+## 4. Core Product Goal (Measurable)
 
-### 5.1 Input Handling
+NovaLM is successful if it can:
 
-* Accept plain text input
-* Support multi-turn conversations
-* Max context window: **32k tokens (v1 target: 8k)**
+> **Autonomously design, implement, debug, and iteratively improve complex software systems with minimal human input, outperforming senior human engineers in a defined technical domain.**
 
-### 5.2 Output Handling
+---
 
-* Streaming and non-streaming responses
-* Structured output (JSON mode)
-* Deterministic output option
+## 5. Scope Definition
 
-### 5.3 API Requirements
+### 5.1 In Scope
 
-* REST API
-* Authentication via API keys
-* Rate limiting & quotas
-* Usage analytics per key
+* Autonomous coding
+* Tool execution
+* Long-term memory
+* Research and experimentation
+* System design and architecture
+* Multi-step reasoning and evaluation
 
-Example endpoint:
+### 5.2 Out of Scope (Explicit)
+
+* General AGI claims
+* Emotional intelligence
+* Creative writing
+* Voice / multimodal (v1)
+* Consumer-facing chatbot UX
+
+---
+
+## 6. System Overview
+
+NovaLM is a **compound AI system** built on top of a **high-performance LLM execution backbone**.
+
+High-level layers:
+
+1. Execution Backbone (Inference)
+2. Agent Runtime (Planning + Acting)
+3. Tool System (Execution)
+4. Evaluation & Critique
+5. Long-Term Memory
+6. Research & Experimentation
+
+---
+
+## 7. Functional Requirements
+
+---
+
+### 7.1 Execution Backbone (Layer 0)
+
+**Purpose:** Reliable, fast inference
+
+Requirements:
+
+* GPU-based inference (vLLM)
+* Streaming responses (SSE)
+* Deterministic and stochastic modes
+* Single model lifecycle per process
+* Health checks & observability
+
+---
+
+### 7.2 Agent Runtime
+
+**Purpose:** Structured autonomous behavior
+
+Requirements:
+
+* Role-based agents:
+
+  * Planner
+  * Architect
+  * Engineer
+  * Evaluator
+  * Critic
+  * Researcher
+* Strict JSON-based internal protocols
+* Multi-step orchestration loops
+* Failure-aware control flow
+
+---
+
+### 7.3 Tool Execution System
+
+**Purpose:** Turn reasoning into action
+
+Required tools (v1):
+
+* Python code execution
+* File system access (sandboxed)
+* Test runner
+* Shell commands (restricted)
+
+Constraints:
+
+* Time limits
+* Resource limits
+* Audit logs
+* Deterministic execution
+
+---
+
+### 7.4 Autonomous Coding Loop
+
+**Required Loop:**
 
 ```
-POST /v1/chat/completions
+Plan
+→ Design
+→ Implement
+→ Execute
+→ Evaluate
+→ Debug
+→ Repeat
 ```
+
+Exit conditions:
+
+* Success criteria met
+* Iteration limit exceeded
+* Confidence threshold reached
 
 ---
 
-## 6. Non-Functional Requirements
+### 7.5 Evaluation & Self-Critique
 
-### 6.1 Performance
+**Purpose:** Ensure correctness and quality
 
-* Average latency < 800ms
-* Concurrent users: 10k+
-* Horizontal scaling support
+Requirements:
 
-### 6.2 Reliability
+* Mandatory evaluator pass
+* Mandatory critic pass
+* Test-based validation
+* Regression detection
+* Explicit failure reporting
 
-* Fault-tolerant inference
+---
+
+### 7.6 Long-Term Memory
+
+**Purpose:** Persistent improvement over time
+
+Memory Types (all required):
+
+1. Episodic Memory – past tasks and failures
+2. Semantic Memory – patterns and knowledge
+3. Procedural Memory – methods and workflows
+
+Requirements:
+
+* Persistent storage
+* Retrieval before task execution
+* Cross-session continuity
+* Cross-platform identity support
+
+---
+
+### 7.7 Research Capability
+
+**Purpose:** Novel system and method creation
+
+Requirements:
+
+* Paper ingestion (PDF → structured text)
+* Contribution extraction
+* Gap analysis
+* Hypothesis generation
+* Experiment design
+* Autonomous experimentation
+
+---
+
+## 8. Non-Functional Requirements
+
+### 8.1 Performance
+
+* Low-latency streaming
+* High throughput inference
+* Parallel agent execution
+
+### 8.2 Reliability
+
+* Fail-fast behavior
 * Graceful degradation
-* Automatic retries
+* No silent failures
 
-### 6.3 Security
+### 8.3 Safety
 
-* Encrypted data in transit (TLS)
-* No training on user data by default
-* Prompt injection mitigation
+* Tool sandboxing
+* Resource caps
+* Execution isolation
+* Full traceability
 
-### 6.4 Compliance
+### 8.4 Observability
 
-* GDPR-ready
-* Data retention controls
-* Audit logging
-
----
-
-## 7. Model Architecture (High-Level)
-
-### 7.1 Model Type
-
-* Transformer-based autoregressive LLM
-
-### 7.2 Training Strategy
-
-* Pretraining on curated multilingual corpus
-* Instruction tuning
-* Safety fine-tuning
-* Optional domain adapters (LoRA / adapters)
-
-### 7.3 Inference Stack
-
-* GPU-based inference
-* KV-cache optimization
-* Quantization (INT8 / INT4)
+* Logs
+* Metrics
+* Memory inspection
+* Experiment tracking
 
 ---
 
-## 8. Safety & Ethics
+## 9. MVP Definition (FINAL, NO AMBIGUITY)
 
-### 8.1 Safety Measures
+NovaLM MVP is complete when:
 
-* Content moderation layer
-* Refusal policies
-* Bias evaluation
-* Prompt filtering
+* The system can autonomously:
 
-### 8.2 Ethical Considerations
+  * Design a non-trivial software system
+  * Implement it from scratch
+  * Run and debug it
+  * Improve it iteratively
+* The system retains memory across tasks
+* The system improves performance over time
+* The system outperforms senior human engineers in **at least one defined technical domain**
 
-* No impersonation of real individuals
-* Transparent AI disclosure
-* Clear limitations communicated to users
-
----
-
-## 9. Out of Scope (v1)
-
-* Autonomous agents
-* Real-world action execution
-* Fully self-learning models
-* Voice or multimodal inputs (future v2)
+This is the **only** MVP definition.
 
 ---
 
-## 10. Risks & Mitigations
+## 10. Success Metrics
 
-| Risk              | Mitigation                     |
-| ----------------- | ------------------------------ |
-| Hallucinations    | Retrieval-augmented generation |
-| High compute cost | Quantization & caching         |
-| Abuse/misuse      | Strict moderation              |
-| Vendor lock-in    | Open standards                 |
+### Quantitative
 
----
+* Task completion rate
+* Iterations to success
+* Error recovery rate
+* Benchmark performance vs humans
+* Latency per reasoning loop
 
-## 11. Milestones & Timeline
+### Qualitative
 
-| Phase             | Duration   |
-| ----------------- | ---------- |
-| Research & Design | 1 month    |
-| Model training    | 2–3 months |
-| API development   | 1 month    |
-| Alpha testing     | 2 weeks    |
-| Public beta       | 1 month    |
+* Architectural quality
+* Novelty of solutions
+* Robustness under ambiguity
 
 ---
 
-## 12. Future Roadmap
+## 11. Competitive Positioning (Honest)
 
-* Multimodal support (image, audio)
-* On-device inference
-* Fine-tuning dashboard
-* Enterprise private deployments
-* Agent framework
+NovaLM is **not** competing directly with:
+
+* ChatGPT (general chat)
+* Claude (general assistant)
+
+NovaLM competes with:
+
+* Senior engineers
+* Research engineers
+* Internal R&D teams
+
+This is a **narrow but extremely high-value category**.
 
 ---
 
-## 13. Open Questions
+## 12. Risks & Constraints
 
-* Exact parameter count for v1?
-* Open-weight vs closed model?
-* Pricing strategy?
-* Self-hosted option?
+### Known Risks
+
+* Model hallucinations
+* Tool misuse
+* Compute cost
+* Memory bloat
+* Evaluation bias
+
+### Mitigations
+
+* Structured protocols
+* Mandatory execution
+* Hard iteration caps
+* Explicit failure states
+
+---
+
+## 13. Roadmap Alignment
+
+NovaLM roadmap aligns with:
+
+* Tool-first intelligence
+* System-level reasoning
+* Memory-driven improvement
+* Domain specialization first
+
+No reliance on:
+
+* Larger models alone
+* Prompt engineering tricks
+* Unverifiable claims
+
+---
+
+## 14. Guiding Principle (Final)
+
+> **Intelligence emerges from systems, not parameters.**
+
+NovaLM is built accordingly.
+
+---
+
+## Final Reality Check
+
+This PRD describes:
+
+* Something **extremely hard**
+* Something **not many teams can build**
+* Something **worth building**
+
+It does **not** promise magic.
+It promises **engineering**.
 
 ---

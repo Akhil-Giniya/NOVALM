@@ -1,105 +1,342 @@
 import time
 import uuid
-from typing import AsyncIterator
-from novalm.core.types import ChatCompletionRequest, ChatCompletionResponseChunk
+import json
+import logging
+from typing import AsyncIterator, List, Dict, Any, Optional
+from novalm.core.types import ChatCompletionRequest, ChatCompletionResponseChunk, ChatMessage
 from novalm.core.inference import InferenceEngine
 from novalm.core.safety import SafetyLayer
 from novalm.config.settings import settings
-
 from novalm.core.memory import VectorMemory
+from novalm.core.tools import get_tool_by_name
+from novalm.core.metrics import GENERATED_TOKENS_TOTAL
+
+# Import Role Prompts
+from novalm.core.prompts import (
+    PLANNER_PROMPT, ARCHITECT_PROMPT, ENGINEER_PROMPT, 
+    EVALUATOR_PROMPT, CRITIC_PROMPT, JSON_ENFORCEMENT,
+    RESEARCH_PROBLEM_PROMPT, RESEARCH_HYPOTHESIS_PROMPT,
+    RESEARCH_DESIGN_PROMPT, RESEARCH_EXECUTION_PROMPT,
+    RESEARCH_ANALYSIS_PROMPT, AGENT_INSTRUCTIONS
+)
+
+# Import Research Schemas (Lazy import inside method or top level)
+from novalm.core.schema import (
+    PlannerOutput, ArchitectOutput, EngineerOutput, EvaluatorOutput, CriticOutput,
+    ProblemAnalysis, HypothesisGen, ExperimentDesign, ExecutionRequest, AnalysisResult
+)
 
 class Orchestrator:
     """
     The Brain of NovaLM.
     Coordinates: Request -> Input Safety -> Inference -> Output Safety -> Response
+    Supports: Simple Chat, Research Mode, and Autonomous FSM (vNext).
     """
     
     def __init__(self, inference_engine: InferenceEngine, safety_layer: SafetyLayer):
         self.inference_engine = inference_engine
         self.safety_layer = safety_layer
-        self.memory = VectorMemory() # Initialize Memory
+        self.memory = VectorMemory()
         
         from novalm.core.cache import CacheManager
         self.cache_manager = CacheManager()
         
-    def _assemble_prompt(self, messages, tools=None) -> str:
-        """
-        Converts list of messages to a single prompt string.
-        Injects RAG context and Tool definitions if available.
-        """
-        # 1. Extract latest user query
-        latest_query = ""
-        for msg in reversed(messages):
-            if msg.role == "user":
-                latest_query = msg.content
-                break
-        
-        # 2. Retrieve Context & Experiences
-        context_str = ""
-        experience_str = ""
-        if latest_query:
-            # RAG Docs
-            retrieved_docs = self.memory.retrieve_documents(latest_query)
-            if retrieved_docs:
-                context_str = "\nCONTEXT:\n" + "\n".join(retrieved_docs) + "\n"
-            
-            # Past Experiences (Memory)
-            # Only retrieve if we have a query.
-            experiences = self.memory.retrieve_experiences(latest_query)
-            if experiences:
-                experience_str = "\nNOVELTY CHECK - EXISTING KNOWLEDGE:\n" + "\n".join(experiences) + "\n(Warning: Do not simply repeat these if they failed. If they succeeded, try to improve or apply to new context.)\n"
-        
-        # 3. Prepare Tools Prompt
-        tools_str = ""
-        if tools:
-            import json
-            tools_desc = json.dumps(tools, indent=2)
-            tools_str = f"\nAVAILABLE TOOLS:\n{tools_desc}\n\nTo use a tool, please output the JSON format of the tool call.\n"
-
-        # 4. Build Prompt
-        prompt = ""
-        # Inject System Prompt with Context and Tools
-        system_msg_found = False
-        for msg in messages:
-            role = msg.role.upper()
-            content = msg.content
-            
-            if role == "SYSTEM":
-                if context_str:
-                    content += context_str
-                if experience_str:
-                    content += experience_str
-                if tools_str:
-                    content += tools_str
-                system_msg_found = True
-                
-            prompt += f"{role}: {content}\n"
-            
-        # If no system message but we have context/tools, prepend it
-        prefix = ""
-        if context_str:
-            prefix += f"Use the following context to answer.\n{context_str}\n"
-        if experience_str:
-            prefix += f"{experience_str}"
-        if tools_str:
-            prefix += f"{tools_str}"
-            
-        if prefix and not system_msg_found:
-             prompt = f"SYSTEM: {prefix}\n" + prompt
-
-        prompt += "ASSISTANT:"
-        return prompt
-
     async def handle_chat(self, request: ChatCompletionRequest) -> AsyncIterator[str]:
         """
-        Main entry point for handling chat requests.
-        Returns an AsyncIterator yielding JSON-formatted string chunks (SSE data).
+        Main entry point. Dispatches to Autonomous Loop or Standard Loop.
+        """
+        if request.sampling_params and request.sampling_params.preset == "autonomous":
+            async for chunk in self._run_autonomous_loop(request):
+                yield chunk
+        elif request.sampling_params and request.sampling_params.preset == "research":
+             async for chunk in self._run_research_loop(request):
+                yield chunk
+        else:
+            async for chunk in self._run_standard_loop(request):
+                yield chunk
+
+    async def _run_autonomous_loop(self, request: ChatCompletionRequest) -> AsyncIterator[str]:
+        """
+        Phase 1: Finite State Machine for Autonomous Agents.
+        Workflow: PLANNER -> ARCHITECT -> ENGINEER -> EVALUATOR -> CRITIC
+        """
+        request_id = f"auto-{uuid.uuid4()}"
+        created_time = int(time.time())
+        model_name = request.model
+        
+        # State Initialization
+        state = "PLANNER"
+        messages = list(request.messages)
+        max_steps = 20 # Hard cap for safety
+        steps = 0
+        
+        yield self._status_chunk(request_id, model_name, "[System: Starting Autonomous FSM...]")
+        
+        while state != "DONE" and steps < max_steps:
+            steps += 1
+            yield self._status_chunk(request_id, model_name, f"\n\n--- ROLE: {state} ---\n")
+            
+            # 1. Select Prompt
+            system_prompt = self._get_prompt_for_role(state)
+            
+            # 2. Build Messages
+            # We must ensure the System Prompt is correct for THIS role. 
+            # We replace any existing system messages or prepend.
+            # For simplicity, we create a fresh prompt sequence: System(Role) + History
+            # But history might contain previous system prompts? We should filter them out for purity?
+            # Or just append. Appending is safer to keep history.
+            # Actually, standard practice is to have ONE system prompt at start.
+            # We will override the content of the first message if it is system, or prepend.
+            
+            current_messages = [ChatMessage(role="system", content=system_prompt)] + [m for m in messages if m.role != "system"]
+            
+            # 3. Inference
+            full_response = ""
+            # Construct prompt string manually or use helper
+            prompt_str = self._assemble_prompt_str(current_messages)
+            
+            # Use strict sampling for logic
+            # Create a copy of sampling params or modify
+            params = request.sampling_params
+            if not params:
+                from novalm.core.types import SamplingParams
+                params = SamplingParams()
+            
+            params.temperature = 0.1
+            params.max_tokens = 4096
+            
+            async for text_chunk in self.inference_engine.generate(prompt_str, params, f"{request_id}-{steps}"):
+                 full_response += text_chunk
+                 # Stream content to user so they see the thought process
+                 yield ChatCompletionResponseChunk(
+                    id=request_id, created=created_time, model=model_name,
+                    choices=[{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                )
+            
+            # 4. Parse & Transition Logic
+            try:
+                # Determine Schema based on Role
+                from novalm.core.schema import PlannerOutput, ArchitectOutput, EngineerOutput, EvaluatorOutput, CriticOutput
+                from novalm.core.parser import JsonOutputParser
+                
+                schema_map = {
+                    "PLANNER": PlannerOutput,
+                    "ARCHITECT": ArchitectOutput,
+                    "ENGINEER": EngineerOutput,
+                    "EVALUATOR": EvaluatorOutput,
+                    "CRITIC": CriticOutput
+                }
+                
+                current_schema = schema_map.get(state)
+                # Parse Strict
+                model_output = JsonOutputParser.parse(full_response, current_schema)
+                # Convert back to dict for generic handling or use object
+                # For minimal refactoring, we use model_output.model_dump()
+                data = model_output.model_dump()
+                
+                # Update History
+                messages.append(ChatMessage(role="assistant", content=full_response))
+                
+                # FSM Transitions
+                if state == "PLANNER":
+                    # Planner outputs milestones.
+                    # Output: {"role": "planner", "milestones": [...]}
+                    state = "ARCHITECT"
+                    
+                elif state == "ARCHITECT":
+                    # Architect outputs file structure.
+                    state = "ENGINEER"
+                    
+                elif state == "ENGINEER":
+                    action = data.get("action")
+                    if action == "final_answer":
+                        state = "EVALUATOR"
+                    elif action:
+                        # Tool Execution
+                        tool_input = data.get("input", {})
+                        yield self._status_chunk(request_id, model_name, f"\n[Executing {action}...]\n")
+                        
+                        tool_output = await self._execute_tool(action, tool_input)
+                        
+                        messages.append(ChatMessage(role="system", content=f"Tool Output: {json.dumps(tool_output)}"))
+                        # Stay in ENGINEER to continue implementing or fix errors
+                    else:
+                        messages.append(ChatMessage(role="system", content="Error: No action found."))
+                        
+                elif state == "EVALUATOR":
+                    status = data.get("status")
+                    if data.get("action") == "python_exec":
+                         # Running a test
+                         yield self._status_chunk(request_id, model_name, "\n[Running Tests...]\n")
+                         tool_output = await self._execute_tool("python_exec", data.get("input", {}))
+                         messages.append(ChatMessage(role="system", content=f"Test Results: {json.dumps(tool_output)}"))
+                         # Stay in Evaluator to analyze results
+                    elif status == "pass":
+                        state = "CRITIC"
+                    else:
+                        # Fail -> Back to Engineer
+                        messages.append(ChatMessage(role="system", content=f"Evaluator Feedback: {data.get('issues')}"))
+                        state = "ENGINEER"
+
+                elif state == "CRITIC":
+                    if data.get("approved"):
+                        yield self._status_chunk(request_id, model_name, "\n[System: Task Completed Successfully]\n")
+                        
+                        # SAVE EPISODIC MEMORY (SUCCESS)
+                        user_task = messages[0].content # Simplified: First msg is User or System?
+                        # Actually first msg in `messages` list passed to loop.
+                        # `request.messages` are user provided.
+                        # We should iterate to find USER msg.
+                        user_query = "Unknown Task"
+                        for m in reversed(request.messages):
+                            if m.role == "user":
+                                user_query = m.content
+                                break
+                        
+                        # We save the final Assistant Code or Conversation?
+                        # Ideally the final solution artifact. 
+                        # But loop history is long.
+                        # Let's save the summary.
+                        self.memory.add_episodic(
+                            task=user_query,
+                            solution="See conversation history.", # TODO: extract final code
+                            outcome="SUCCESS",
+                            feedback=data.get("critique", "Approved")
+                        )
+                        state = "DONE"
+                    else:
+                        messages.append(ChatMessage(role="system", content=f"Critic Feedback: {data.get('feedback')}"))
+                        state = "ENGINEER" # Fix critique
+                        
+            except ValueError as e:
+                # Validation Failed
+                logging.error(f"FSM Parsing Error: {e}")
+                err_msg = f"SYSTEM: Output validation failed. {str(e)}. Please output VALID JSON strictly adhering to the schema."
+                yield self._status_chunk(request_id, model_name, f"\n[System: Invalid JSON. Retrying...]\n")
+                messages.append(ChatMessage(role="system", content=err_msg))
+                # Retry same state (loop continues)
+            except Exception as e:
+                logging.error(f"FSM Error: {e}")
+                messages.append(ChatMessage(role="system", content=f"Error: {e}"))
+    async def _run_research_loop(self, request: ChatCompletionRequest) -> AsyncIterator[str]:
+        """
+        Phase 4: Scientific Method FSM.
+        States: PROBLEM -> HYPOTHESIS -> DESIGN -> EXECUTION -> ANALYSIS
+        """
+        request_id = f"res-{uuid.uuid4()}"
+        created_time = int(time.time())
+        model_name = request.model
+        
+        state = "PROBLEM"
+        messages = list(request.messages)
+        max_steps = 15
+        steps = 0
+        
+        from novalm.core.parser import JsonOutputParser
+        
+        yield self._status_chunk(request_id, model_name, "[System: Starting Research FSM...]")
+        
+        while state != "DONE" and steps < max_steps:
+            steps += 1
+            yield self._status_chunk(request_id, model_name, f"\n\n--- PHASE: {state} ---\n")
+            
+            # 1. Select Prompt
+            system_prompt = self._get_prompt_for_research_role(state)
+            
+            # 2. Build Messages (System + History)
+            current_messages = [ChatMessage(role="system", content=system_prompt)] + [m for m in messages if m.role != "system"]
+            
+            # 3. Inference
+            prompt_str = self._assemble_prompt_str(current_messages)
+            
+            # Use specific params for Research (higher context, lower temp)
+            params = request.sampling_params
+            if not params:
+                 from novalm.core.types import SamplingParams
+                 params = SamplingParams()
+            params.temperature = 0.2
+            params.max_tokens = 4096
+            
+            full_response = ""
+            async for text_chunk in self.inference_engine.generate(prompt_str, params, f"{request_id}-{steps}"):
+                 full_response += text_chunk
+                 yield ChatCompletionResponseChunk(
+                    id=request_id, created=created_time, model=model_name,
+                    choices=[{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                )
+            
+            # 4. Parse & Transition
+            try:
+                # Determine Schema
+                if state == "PROBLEM": schema = ProblemAnalysis
+                elif state == "HYPOTHESIS": schema = HypothesisGen
+                elif state == "DESIGN": schema = ExperimentDesign
+                elif state == "EXECUTION": schema = ExecutionRequest
+                elif state == "ANALYSIS": schema = AnalysisResult
+                else: schema = AnalysisResult # fallback
+                
+                model_output = JsonOutputParser.parse(full_response, schema)
+                data = model_output.model_dump()
+                
+                # Append History
+                messages.append(ChatMessage(role="assistant", content=full_response))
+                
+                # FSM Logic
+                if state == "PROBLEM":
+                    # Action: Search Literature?
+                    keywords = data.get("literature_keywords", [])
+                    if keywords and "pdf_reader" in [t["function"]["name"] for t in (request.tools or [])]:
+                        # If tool available, we could trigger it. 
+                        # For now, we assume user provides context or we skip search to save tokens.
+                        # Ideally: INTERMEDIATE state "LITERATURE_SEARCH".
+                        pass
+                    state = "HYPOTHESIS"
+                    
+                elif state == "HYPOTHESIS":
+                    state = "DESIGN"
+                    
+                elif state == "DESIGN":
+                    state = "EXECUTION"
+                    
+                elif state == "EXECUTION":
+                    action = data.get("action")
+                    if action:
+                        yield self._status_chunk(request_id, model_name, f"\n[Running Experiment: {action}...]\n")
+                        tool_output = await self._execute_tool(action, data.get("input", {}))
+                        messages.append(ChatMessage(role="system", content=f"Experiment Output: {json.dumps(tool_output)}"))
+                        state = "ANALYSIS"
+                    else:
+                        state = "ANALYSIS" # Skip execution if no action? Or retry?
+                        
+                elif state == "ANALYSIS":
+                    if data.get("next_step") == "done":
+                        yield self._status_chunk(request_id, model_name, "\n[System: Research Concluded]\n")
+                        
+                        # SAVE SEMANTIC MEMORY (Knowledge)
+                        self.memory.add_semantic(
+                            content=f"Research Conclusion: {data.get('conclusion')}\nObservation: {data.get('observation')}",
+                            source="research_agent"
+                        )
+                        state = "DONE"
+                    else:
+                        state = "HYPOTHESIS" # Refine
+                        
+            except ValueError as e:
+                logging.error(f"Research FSM Error: {e}")
+                err_msg = f"SYSTEM: Validation failed: {e}. Retry with valid JSON."
+                messages.append(ChatMessage(role="system", content=err_msg))
+            except Exception as e:
+                logging.error(f"Research FSM Error: {e}")
+                messages.append(ChatMessage(role="system", content=f"Error: {e}"))
+
+        """
+        The Standard Orchestrator Loop (Legacy + Research Mode).
         """
         request_id = f"chatcmpl-{uuid.uuid4()}"
         created_time = int(time.time())
         model_name = request.model
         
-        # 1. Assemble Prompt (with Tools)
+        # 1. Assemble Prompt
         prompt = self._assemble_prompt(request.messages, request.tools)
         
         # 1.5 JSON Mode Injection
@@ -111,277 +348,227 @@ class Orchestrator:
             try:
                 self.safety_layer.check_input(prompt)
             except ValueError as e:
-                # In streaming, we yield an error chunk or raising exception for middleware to catch
-                # Ideally middleware catches this. We'll raise it.
-                raise e
+                yield self._error_chunk(request_id, str(e))
+                return
 
         # 3. Setup Sampling Params
-        # Use request params or defaults
         sampling_params = request.sampling_params if request.sampling_params else None
         if sampling_params is None:
-             # Create default 
              from novalm.core.types import SamplingParams
              sampling_params = SamplingParams()
              
-        # Apply Presets (Execution Mode)
+        # Apply Presets
         if sampling_params.preset == "deterministic" or sampling_params.preset == "coding":
             sampling_params.temperature = 0.1
             sampling_params.top_p = 0.1
-            sampling_params.max_tokens = max(sampling_params.max_tokens, 1024) # Ensure capacity for code
+            sampling_params.max_tokens = max(sampling_params.max_tokens, 1024)
         elif sampling_params.preset == "creative":
             sampling_params.temperature = 0.9
             sampling_params.top_p = 0.95
         elif sampling_params.preset == "research":
             sampling_params.temperature = 0.2
             sampling_params.top_p = 0.95
-            sampling_params.max_tokens = 2048 # Research needs long output
+            sampling_params.max_tokens = 2048
 
-        # 4. Inference & Output Safety
-        from novalm.core.metrics import GENERATED_TOKENS_TOTAL
-        
-        token_count = 0
-
-        # Agent Loop (ReAct)
+        # 4. Inference loop (ReAct)
         max_steps = 5
         current_step = 0
-        
-        # Helper to detect if we should run in agent mode
         is_agent_mode = bool(request.tools)
-        
-        # Tools Registry
-        from novalm.core.tools import get_tool_by_name
-        
-        # Working messages list (local copy)
         messages = list(request.messages)
         
         while current_step < max_steps:
             current_step += 1
             request_id_step = f"{request_id}-step-{current_step}"
             
-            # 1. Assemble Prompt
+            # Re-assemble prompt if loop
             prompt = self._assemble_prompt(messages, request.tools)
             
-            # 1.5.0 Research Persona Injection (if preset is request)
-            # We modify the prompt or inject strict system message if not present?
-            # _assemble_prompt handles context/tools. 
-            # If research preset is active, we should prepend the Research System Prompt if possible.
-            # But prompt assembly already happened.
-            # Let's simple append instructions or handle it better in _assemble_prompt.
-            # For iteration speed, we inject high-level instructions here.
-            
+            # 4.5.0 Research Persona Injection
             if sampling_params and sampling_params.preset == "research":
-                from novalm.core.prompts import RESEARCH_SYSTEM_PROMPT
-                # If prompt start with system, replace it? Or just pre-pend.
-                # Our assembled prompt is "SYSTEM: ... \n ... ASSISTANT:"
-                # We can replace the default system prompt if we had one.
-                # Simplified: Just ensure the model knows it's a researcher.
                 prompt = "SYSTEM: " + RESEARCH_SYSTEM_PROMPT + "\n" + prompt.replace("SYSTEM: ", "", 1)
 
-            # 1.5.1 Agent JSON Enforcement
+            # 4.5.1 Agent JSON Enforcement
             if is_agent_mode:
-                from novalm.core.prompts import AGENT_INSTRUCTIONS
                 prompt += AGENT_INSTRUCTIONS
 
-            # 2. Input Safety
-            if settings.ENABLE_SAFETY_CHECKS:
-                 try:
-                     self.safety_layer.check_input(prompt)
-                 except ValueError:
-                     yield self._error_chunk(request_id, "Safety Violation in Input")
-                     return
-
-            # 3. Inference
-            token_count = 0
+            # Inference
             collected_response = ""
             
-            # CACHE CHECK
-            # Only cache if NOT in strict agent execution loop with side-effects? 
-            # Actually, safe to cache generation if prompt is same.
+            # Cache Check
             cached_text = None
             if self.cache_manager:
                  cached_text = self.cache_manager.get(prompt, sampling_params)
             
             if cached_text:
-                # HIT: Yield immediately
                 collected_response = cached_text
                 yield ChatCompletionResponseChunk(
-                        id=request_id,
-                        created=created_time,
-                        model=model_name,
+                        id=request_id, created=created_time, model=model_name,
                         choices=[{"index": 0, "delta": {"content": cached_text}, "finish_reason": "stop"}]
                     )
             else:
-                # MISS: Run Inference
                 try:
                     async for text_chunk in self.inference_engine.generate(prompt, sampling_params, request_id_step):
-                        # Safety
                         if settings.ENABLE_SAFETY_CHECKS:
                             text_chunk = self.safety_layer.check_output(text_chunk)
                         
-                        # Accumulate for tool parsing
                         collected_response += text_chunk
-                        token_count += 1
                         GENERATED_TOKENS_TOTAL.labels(model=model_name).inc()
                         
-                        # Yield chunk to user
                         yield ChatCompletionResponseChunk(
-                            id=request_id,
-                            created=created_time,
-                            model=model_name,
+                            id=request_id, created=created_time, model=model_name,
                             choices=[{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
                         )
                     
-                    # CACHE SET
                     if self.cache_manager and collected_response:
                         self.cache_manager.set(prompt, collected_response, sampling_params)
                         
                 except Exception as e:
-                     import logging
                      logging.error(f"Inference error: {e}")
                      yield self._error_chunk(request_id, str(e))
                      return
 
             if not is_agent_mode:
-                break # Simple chat, done after one turn using break logic above, 
-                # but we need to verify indentation. 
-                # The 'if not is_agent_mode: break' is currently AFTER the try/except block.
-                # Correct.
+                break
 
-            if not is_agent_mode:
-                break # Simple chat, done after one turn
-
-            # 4. Agent Logic: Parse & Act
-            import json
+            # Agent Logic: Parse & Act (Simplistic ReAct)
             tool_action = None
             try:
-                # Naive JSON parsing (look for first { and last })
                 start = collected_response.find("{")
                 end = collected_response.rfind("}")
                 if start != -1 and end != -1:
-                    json_str = collected_response[start:end+1]
-                    data = json.loads(json_str)
+                    data = json.loads(collected_response[start:end+1])
                     if "action" in data and data["action"] != "final_answer":
                         tool_action = data
-            except:
-                pass # Not a valid JSON action, treat as text
+            except: pass
                 
             if tool_action:
                 tool_name = tool_action.get("action")
                 tool_input = tool_action.get("input", {})
                 
-                # Yield "Tool Execution" notification (as content for now)
                 yield ChatCompletionResponseChunk(
-                    id=request_id,
-                    created=created_time,
-                    model=model_name,
+                    id=request_id, created=created_time, model=model_name,
                     choices=[{"index": 0, "delta": {"content": f"\n\n[System: Executing {tool_name}...]\n\n"}, "finish_reason": None}]
                 )
                 
-                tool = get_tool_by_name(tool_name)
-                tool_output = None
+                tool_output = await self._execute_tool(tool_name, tool_input)
                 
-                if tool:
-                    try:
-                        tool_output = await tool.run(tool_input)
-                    except Exception as e:
-                        tool_output = {"error": str(e)}
-                else:
-                    tool_output = {"error": f"Tool {tool_name} not found."}
-                
-                # --- AUTOMATED DEBUG LOOP (Self-Correction) ---
-                # Check if we should run the Evaluator
-                debug_feedback = None
-                if request.test_code and (tool_name == "python_exec" or tool_name == "write_file"):
-                     # Condition: User provided tests AND agent just wrote/ran code.
-                     # We assume the agent's action affects the environment or defines the code.
-                     # Logic:
-                     # 1. If python_exec, the code is in tool_input["code"].
-                     # 2. If write_file, the code is in a file, we might need to read it or just run the test if the test imports it.
-                     
-                     code_to_eval = ""
-                     if tool_name == "python_exec":
-                         code_to_eval = tool_input.get("code", "")
-                     elif tool_name == "write_file":
-                         # For write_file, the code is on disk. The test_code presumably imports it or reads it.
-                         # We'll pass empty code string, letting test_code handle imports if file exists.
-                         # Or we could try to read it if filename is python.
-                         pass 
-                         
-                     # Run Evaluator
-                     from novalm.core.evaluator import Evaluator
-                     evaluator = Evaluator()
-                     # If we are in a debug loop, checks attempts
-                     # We reuse 'current_step' as a proxy for attempts in this loop, 
-                     # but really we should track debug attempts separately or just let max_steps handle it.
-                     # Let's rely on max_steps for now to keep it simple, 
-                     # but give explicit feedback.
-                     
-                     eval_result = await evaluator.evaluate(code_to_eval, request.test_code)
-                     
-                     if eval_result["status"] == "FAIL":
-                         debug_feedback = f"\nSYSTEM EVALUATION:\nTEST FAILED.\nFEEDBACK: {eval_result['feedback']}\n\nYou must fix the code. Analyze the error and try again."
-                         tool_output = {"tool_output": tool_output, "evaluator_feedback": debug_feedback}
-                         
-                         yield ChatCompletionResponseChunk(
-                            id=request_id,
-                            created=created_time,
-                            model=model_name,
-                            choices=[{"index": 0, "delta": {"content": f"\n\n[System: Tests Failed. Auto-Correcting...]\n\n"}, "finish_reason": None}]
-                        )
-                     else:
-                         tool_output = {"tool_output": tool_output, "evaluator_feedback": "TEST PASSED! Great job."}
-                         yield ChatCompletionResponseChunk(
-                            id=request_id,
-                            created=created_time,
-                            model=model_name,
-                            choices=[{"index": 0, "delta": {"content": f"\n\n[System: Tests Passed!]\n\n"}, "finish_reason": None}]
-                        )
-
-                     # SAVE EXPERIENCE TO MEMORY
-                     # Task: The last user query.
-                     # Solution: The code (if python_exec) or tool action.
-                     # Outcome: SUCCESS/FAIL from evaluator, or just generic success if no eval.
-                     outcome = eval_result["status"] if eval_result else "SUCCESS"
-                     feedback = debug_feedback if debug_feedback else ""
-                     
-                     # Simple heuristic: If we ran code, save it.
-                     task_query = messages[-1].content # Wait, messages list is appending assistant responses. 
-                     # We need the original User Query.
-                     # It is tricky to get exact "Task" from linear history without structure. 
-                     # For MVP, we use the initial request prompt or search back for USER role.
-                     
-                     user_task = "Unknown Task"
-                     for m in reversed(request.messages):
-                         if m.role == "user":
-                             user_task = m.content
-                             break
-                             
-                     self.memory.add_experience(
-                        task=user_task,
-                        solution=f"Action: {tool_name}\nInput: {json.dumps(tool_input)}",
-                        outcome=outcome,
-                        feedback=feedback
-                     )
-
-                # Append to history
-                from novalm.core.types import ChatMessage
+                # Loop continuation
                 messages.append(ChatMessage(role="assistant", content=collected_response))
                 messages.append(ChatMessage(role="system", content=f"Tool Output: {json.dumps(tool_output)}"))
-                
-                # Continue loop
             else:
-                # No tool action or final answer
+                break # Failed to parse or final answer
+
+    def _assemble_prompt(self, messages, tools=None) -> str:
+        # 1. Extract latest user query
+        latest_query = ""
+        for msg in reversed(messages):
+            if msg.role == "user":
+                latest_query = msg.content
                 break
+        
+        # 2. Retrieve Context & Experiences (Multi-Layer Memory)
+        context_str = ""
+        episodic_str = ""
+        semantic_str = ""
+        procedural_str = ""
+        
+        if latest_query:
+            # We call the new retrieve_all method via cast or direct usage if typed
+            # Or retrieve individually for control
+            
+            # A. Episodic (Past Runs)
+            episodes = self.memory.retrieve_episodic(latest_query)
+            if episodes:
+                episodic_str = "\n[MEMORY: PAST EPISODES]\n" + "\n".join(episodes) + "\n"
+            
+            # B. Semantic (Knowledge)
+            semantics = self.memory.retrieve_semantic(latest_query)
+            if semantics:
+                semantic_str = "\n[MEMORY: KNOWLEDGE BASE]\n" + "\n".join(semantics) + "\n"
                 
-        # Logging Usage
-        import logging
-        logging.info(f"USAGE: request_id={request_id} model={model_name} total_steps={current_step}")
+            # C. Procedural (Heuristics)
+            procedures = self.memory.retrieve_procedural(latest_query)
+            if procedures:
+                procedural_str = "\n[MEMORY: RECOMMENDED WORKFLOWS]\n" + "\n".join(procedures) + "\n"
+        
+        # Combine into a single Memory Block
+        memory_block = ""
+        if episodic_str: memory_block += episodic_str
+        if semantic_str: memory_block += semantic_str
+        if procedural_str: memory_block += procedural_str
+        
+        # 3. Prepare Tools Prompt
+        tools_str = ""
+        if tools:
+            tools_desc = json.dumps(tools, indent=2)
+            tools_str = f"\nAVAILABLE TOOLS:\n{tools_desc}\n\nTo use a tool, please output the JSON format of the tool call.\n"
+
+        # 4. Build Prompt
+        prompt = ""
+        system_msg_found = False
+        for msg in messages:
+            role = msg.role.upper()
+            content = msg.content
+            if role == "SYSTEM":
+                content += "\n" + memory_block
+                if tools_str: content += tools_str
+                system_msg_found = True
+            prompt += f"{role}: {content}\n"
+            
+        prefix = ""
+        if tools_str: prefix += f"{tools_str}"
+            
+        if prefix and not system_msg_found:
+             prompt = f"SYSTEM: {prefix}{memory_block}\n" + prompt
+
+        prompt += "ASSISTANT:"
+        return prompt
+
+    def _get_prompt_for_role(self, role: str) -> str:
+        if role == "PLANNER": return PLANNER_PROMPT
+        if role == "ARCHITECT": return ARCHITECT_PROMPT
+        if role == "ENGINEER": return ENGINEER_PROMPT
+        if role == "EVALUATOR": return EVALUATOR_PROMPT
+        if role == "CRITIC": return CRITIC_PROMPT
+        return JSON_ENFORCEMENT
+
+    async def _execute_tool(self, name: str, input_data: dict) -> dict:
+        tool = get_tool_by_name(name)
+        if tool:
+            try:
+                return await tool.run(input_data)
+            except Exception as e:
+                return {"error": str(e)}
+        return {"error": "Tool not found"}
+
+    def _get_prompt_for_research_role(self, role: str) -> str:
+        if role == "PROBLEM": return RESEARCH_PROBLEM_PROMPT
+        if role == "HYPOTHESIS": return RESEARCH_HYPOTHESIS_PROMPT
+        if role == "DESIGN": return RESEARCH_DESIGN_PROMPT
+        if role == "EXECUTION": return RESEARCH_EXECUTION_PROMPT
+        if role == "ANALYSIS": return RESEARCH_ANALYSIS_PROMPT
+        return JSON_ENFORCEMENT
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(text[start:end+1])
+        raise ValueError("No JSON found")
+
+    def _assemble_prompt_str(self, messages: List[ChatMessage]) -> str:
+        prompt = ""
+        for msg in messages:
+            prompt += f"{msg.role.upper()}: {msg.content}\n"
+        prompt += "ASSISTANT:"
+        return prompt
+
+    def _status_chunk(self, req_id, model, msg):
+        return ChatCompletionResponseChunk(
+             id=req_id, created=int(time.time()), model=model,
+             choices=[{"index": 0, "delta": {"content": msg}, "finish_reason": None}]
+        )
 
     def _error_chunk(self, request_id, message):
-         return {
-            "error": {
-                "message": message,
-                "type": "internal_error",
-                "code": 500
-            }
-        }
+         return ChatCompletionResponseChunk(
+             id=request_id, created=int(time.time()), model="error",
+             choices=[{"index": 0, "delta": {"content": f"Error: {message}"}, "finish_reason": "error"}]
+        )

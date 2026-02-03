@@ -17,7 +17,7 @@ class SamplingParams(BaseModel):
     ignore_eos: bool = False
     
     # Execution Mode Presets
-    preset: Optional[Literal["creative", "deterministic", "coding", "research"]] = None
+    preset: Optional[Literal["creative", "deterministic", "coding", "research", "autonomous"]] = None
     
     # Self-Correction
     max_debug_attempts: int = 3

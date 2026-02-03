@@ -1,359 +1,427 @@
-# 📘 Technical PRD + System Architecture
+# 📘 Technical Product Requirements Document
 
-## Product: **NovaLM** (Technical Specification)
+## Product: **NovaLM vNext**
 
----
-
-## 1. Technical Vision
-
-NovaLM is a **scalable, transformer-based LLM platform** providing:
-
-* High-throughput inference
-* Deterministic and stochastic generation modes
-* Safety-aligned responses
-* Modular deployment (cloud + on-prem)
-
-The system is designed with **clear separation of concerns**:
-
-* Model
-* Inference
-* Safety
-* Orchestration
-* API layer
-* Observability
+### Category: Autonomous Coding & Research Agent Platform
 
 ---
 
-## 2. System Goals (Technical)
+## 1. Purpose of This Document
 
-| Goal                   | Target              |
-| ---------------------- | ------------------- |
-| P95 latency            | < 800 ms            |
-| Max context length     | 8k (v1), 32k (v2)   |
-| Throughput             | ≥ 50 tokens/sec/GPU |
-| Availability           | 99.9%               |
-| Horizontal scalability | Required            |
-| Vendor lock-in         | Avoided             |
+This Technical PRD defines the **exact system architecture, components, interfaces, constraints, and implementation requirements** for evolving NovaLM from a **LLM inference backend** into a **PhD-level autonomous coding and research agent**.
 
----
+This document is:
 
-## 3. Model Architecture
-
-### 3.1 Core Model
-
-* **Architecture**: Decoder-only Transformer
-* **Attention**: Multi-Head Self Attention
-* **Position Encoding**: RoPE
-* **Activation**: SwiGLU
-* **Normalization**: RMSNorm
-
-### 3.2 Parameter Targets
-
-| Version  | Params |
-| -------- | ------ |
-| NovaLM-S | 7B     |
-| NovaLM-M | 13B    |
-| NovaLM-L | 34B    |
+* **Implementation-binding**
+* **Architecture-defining**
+* **Testable**
 
 ---
 
-### 3.3 Training Stack
+## 2. System Objective (Technical)
 
-* **Framework**: PyTorch + FSDP / DeepSpeed
-* **Parallelism**:
+Build a **compound AI system** that can:
 
-  * Data Parallel
-  * Tensor Parallel
-  * Pipeline Parallel (large models)
+* Decompose ambiguous engineering problems
+* Design system architectures
+* Implement code from scratch
+* Execute, test, debug, and refactor autonomously
+* Retain long-term memory across tasks and platforms
+* Perform research loops (hypothesis → experiment → evaluation)
 
-### 3.4 Fine-Tuning
-
-* Instruction tuning
-* RLHF (v2)
-* Safety alignment
-* Domain adapters (LoRA)
+All capabilities must be **machine-enforced**, not prompt-dependent.
 
 ---
 
-## 4. Inference Architecture
-
-### 4.1 Inference Engine
-
-* **Runtime**: vLLM / custom CUDA kernels
-* **Precision**:
-
-  * FP16 (default)
-  * INT8 / INT4 (production)
-* **Optimizations**:
-
-  * KV-cache reuse
-  * Continuous batching
-  * Speculative decoding (v2)
-
----
-
-## 5. High-Level System Architecture
+## 3. High-Level System Architecture
 
 ```
-+-------------------+
-|  Client / App     |
-+---------+---------+
-          |
-          v
-+-------------------+
-|  API Gateway      |
-| (Auth, RateLimit) |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Request Orchestr. |
-| (Context, Tools)  |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Safety Layer      |
-| (Pre-check)       |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Inference Engine  |
-| (GPU / TPU)       |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Safety Layer      |
-| (Post-check)      |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Response Formatter|
-+-------------------+
+┌─────────────────────────────┐
+│ FastAPI Gateway             │
+│  - Auth                     │
+│  - Rate Limit               │
+│  - Streaming (SSE)          │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│ Orchestrator (Agent Runtime)│
+│  - Role execution           │
+│  - Control loops            │
+│  - State machine            │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│ Inference Engine (vLLM)     │
+│  - GPU only                 │
+│  - Streaming tokens         │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│ Tool Execution Layer        │
+│  - Python                   │
+│  - File system              │
+│  - Shell (sandboxed)        │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│ Evaluation & Critique       │
+│  - Tests                    │
+│  - Benchmarks               │
+│  - Regression detection     │
+└──────────────┬──────────────┘
+               ↓
+┌─────────────────────────────┐
+│ Long-Term Memory            │
+│  - Episodic                 │
+│  - Semantic                 │
+│  - Procedural               │
+└─────────────────────────────┘
 ```
 
 ---
 
-## 6. Component Breakdown
+## 4. Core Technical Principles (Non-Negotiable)
 
-### 6.1 API Gateway
+1. **Single vLLM lifecycle per process**
+2. **GPU-only inference (CUDA fail-fast)**
+3. **Streaming-first execution**
+4. **Structured machine-readable protocols**
+5. **Tool execution over pure text**
+6. **Explicit evaluation loops**
+7. **Persistent memory**
 
-**Responsibilities**
+Any implementation violating these is **out of spec**.
 
-* API key authentication
+---
+
+## 5. Component Requirements
+
+---
+
+## 5.1 API Gateway (FastAPI)
+
+### Responsibilities
+
+* Authentication (Bearer tokens)
 * Rate limiting
 * Request validation
-* Version routing
+* Streaming SSE responses
+* Health checks
 
-**Tech**
+### Constraints
 
-* FastAPI / Envoy
-* Redis for rate limits
+* Stateless
+* No inference logic
+* No agent logic
 
----
-
-### 6.2 Request Orchestrator
-
-**Responsibilities**
-
-* Tokenization
-* Conversation state
-* Prompt assembly
-* Tool/function injection
-
-**Design Notes**
-
-* Stateless (session stored externally)
-* Pluggable prompt templates
-
----
-
-### 6.3 Safety Layer
-
-#### Pre-Inference
-
-* Prompt injection detection
-* Policy classification
-* Input filtering
-
-#### Post-Inference
-
-* Toxicity detection
-* PII redaction
-* Policy enforcement
-
-**Models**
-
-* Lightweight classifier (DistilBERT / custom)
-
----
-
-### 6.4 Inference Engine
-
-**Responsibilities**
-
-* Batch scheduling
-* Token generation
-* GPU memory management
-
-**Features**
-
-* Streaming tokens
-* Cancellation support
-* Priority queues
-
----
-
-### 6.5 Context & Memory Store
-
-* **Vector DB**: FAISS / Milvus
-* **Embedding model**: 768–1024 dim
-* Used for:
-
-  * RAG
-  * Long-term memory
-  * Enterprise knowledge
-
----
-
-## 7. Data Flow (Chat Completion)
+### Required Endpoints
 
 ```
-User Prompt
-   ↓
-Tokenization
-   ↓
-Context Assembly
-   ↓
-Safety (Input)
-   ↓
-Model Inference
-   ↓
-Safety (Output)
-   ↓
-Detokenization
-   ↓
-Client Response
+POST /v1/agent/run
+GET  /health
+```
+
+### Streaming Format
+
+```
+Content-Type: text/event-stream
+data: {...}\n\n
+data: [DONE]\n\n
 ```
 
 ---
 
-## 8. API Specification
+## 5.2 Orchestrator (Agent Runtime)
 
-### 8.1 Chat Completion
+### Role
+
+Central **state machine** controlling agent behavior.
+
+### Responsibilities
+
+* Role sequencing
+* Loop control
+* Tool invocation
+* Error handling
+* Memory injection
+* Termination logic
+
+### Required Agent Roles
+
+* Planner
+* Architect
+* Engineer
+* Evaluator
+* Critic
+* Researcher
+* Finalizer
+
+### Control Loop (Mandatory)
 
 ```
-POST /v1/chat/completions
+Planner
+→ Architect
+→ Engineer
+→ Tool Execution
+→ Evaluator
+→ Critic
+→ (loop | terminate)
 ```
 
-**Request**
+### Constraints
+
+* No FastAPI imports
+* No CUDA logic
+* Deterministic failure handling
+
+---
+
+## 5.3 Inference Engine
+
+### Implementation
+
+* vLLM-based
+* Initialized ONCE at startup
+
+### Requirements
+
+* CUDA availability check at init
+* Streaming token generation
+* Deterministic mode support
+* Configurable sampling parameters
+
+### Interface
+
+```python
+async def generate(
+    prompt: str,
+    sampling_params: SamplingParams
+) -> AsyncIterator[str]
+```
+
+---
+
+## 5.4 Tool Execution Layer
+
+### Purpose
+
+Convert reasoning into **real-world actions**.
+
+### Required Tools (v1)
+
+* Python execution (sandboxed)
+* File read/write
+* Test runner
+* Restricted shell execution
+
+### Constraints
+
+* Time limits
+* Memory limits
+* No network access (v1)
+* Full execution logs
+
+### Tool Interface
+
+```python
+class Tool(ABC):
+    name: str
+    async def run(input: dict) -> dict
+```
+
+---
+
+## 5.5 Structured Agent Protocol
+
+### All agent outputs MUST be JSON
+
+Example:
 
 ```json
 {
-  "model": "novalm-13b",
-  "messages": [
-    {"role": "system", "content": "You are a helpful AI"},
-    {"role": "user", "content": "Explain transformers"}
-  ],
-  "temperature": 0.7,
-  "max_tokens": 512,
-  "stream": true
+  "role": "engineer",
+  "plan": "...",
+  "action": "tool_name",
+  "input": {...},
+  "expected_result": "..."
+}
+```
+
+Free-form text is **disallowed** internally.
+
+---
+
+## 5.6 Evaluation System
+
+### Purpose
+
+Ensure correctness and quality.
+
+### Requirements
+
+* Mandatory evaluator pass
+* Test-based validation
+* Explicit failure states
+* Regression tracking
+
+### Evaluator Output
+
+```json
+{
+  "status": "pass | fail",
+  "issues": [],
+  "evidence": "...",
+  "recommended_fix": "..."
 }
 ```
 
 ---
 
-## 9. Observability & Monitoring
+## 5.7 Critic System
 
-### 9.1 Metrics
+### Purpose
 
-* Latency (P50/P95/P99)
-* Token usage
-* GPU utilization
-* Error rates
+Detect weak designs and assumptions.
 
-### 9.2 Logging
+### Requirements
 
-* Structured request logs
-* Redacted prompts
-* Safety decision traces
+* Runs after evaluator
+* Mandatory execution
+* Cannot be skipped
 
-### 9.3 Tools
+### Output
 
-* Prometheus
-* Grafana
-* OpenTelemetry
+* Weaknesses
+* Assumption failures
+* Confidence score
 
 ---
 
-## 10. Deployment Strategy
+## 5.8 Long-Term Memory System
 
-### 10.1 Infrastructure
+### Memory Types (ALL REQUIRED)
 
-* Kubernetes
-* GPU nodes (A100 / L40)
-* Auto-scaling inference pools
+#### Episodic
 
-### 10.2 Environments
+* Past tasks
+* Failures
+* Iterations
 
-| Env     | Purpose         |
-| ------- | --------------- |
-| Dev     | Feature testing |
-| Staging | Load testing    |
-| Prod    | Live traffic    |
+#### Semantic
 
----
+* Patterns
+* Known architectures
+* Extracted knowledge
 
-## 11. Security Architecture
+#### Procedural
 
-* API key isolation
-* Role-based access
-* Encrypted secrets (Vault)
-* Zero-trust internal services
+* Workflows
+* Debug strategies
+* Design heuristics
 
----
+### Requirements
 
-## 12. Failure Handling
-
-| Failure               | Strategy               |
-| --------------------- | ---------------------- |
-| GPU OOM               | Retry on smaller batch |
-| Model crash           | Pod restart            |
-| High load             | Backpressure           |
-| Safety false positive | Human review flag      |
+* Persistent storage
+* Retrieval before task execution
+* Task-linked indexing
+* Cross-session continuity
 
 ---
 
-## 13. Technical Risks
+## 5.9 Research & Experimentation Module
 
-| Risk           | Mitigation             |
-| -------------- | ---------------------- |
-| Cost explosion | Quantization + caching |
-| Hallucinations | RAG + constraints      |
-| Latency spikes | Continuous batching    |
-| Abuse          | Multi-layer moderation |
+### Capabilities
 
----
+* Paper ingestion (PDF → structured text)
+* Contribution extraction
+* Gap analysis
+* Hypothesis generation
+* Experiment design
+* Autonomous execution
 
-## 14. Appendix
+### Required Loop
 
-### Supported Languages
-
-* Python
-* JavaScript
-* Go
-* Rust
-
-### Model Config Example
-
-```yaml
-hidden_size: 5120
-num_layers: 40
-num_heads: 40
-context_length: 8192
 ```
+Hypothesis
+→ Experiment design
+→ Implementation
+→ Execution
+→ Measurement
+→ Analysis
+→ Iterate
+```
+
+---
+
+## 6. Non-Functional Requirements
+
+### Performance
+
+* Low-latency token streaming
+* Parallel agent execution
+* Efficient batching
+
+### Reliability
+
+* Fail-fast behavior
+* No silent failures
+* Graceful termination
+
+### Safety
+
+* Tool sandboxing
+* Resource caps
+* Execution isolation
+
+### Observability
+
+* Logs
+* Metrics
+* Memory introspection
+* Experiment traces
+
+---
+
+## 7. MVP Acceptance Criteria (FINAL)
+
+NovaLM vNext is considered MVP-complete only if:
+
+* The system autonomously completes **multi-hour coding tasks**
+* The system debugs its own failures
+* The system retains memory across sessions
+* The system improves on repeated tasks
+* The system outperforms senior human engineers in a **defined domain**
+
+Anything less is **not MVP**.
+
+---
+
+## 8. Explicit Non-Goals
+
+* General AGI
+* Chatbot UX
+* Creative writing
+* Multimodal reasoning (v1)
+* Emotional intelligence
+
+---
+
+## 9. Key Risks
+
+| Risk             | Mitigation                       |
+| ---------------- | -------------------------------- |
+| Hallucination    | Structured protocols + execution |
+| Tool misuse      | Sandboxing + caps                |
+| Memory explosion | Pruning + indexing               |
+| Evaluation bias  | Multiple evaluators              |
+| Cost             | Smaller models + tools           |
+
+---
+
+## 10. Final Engineering Principle
+
+> **NovaLM is a system that enforces intelligence, not a model that pretends to have it.**
+
+This Technical PRD is **hard**, **honest**, and **buildable**.
 
 ---

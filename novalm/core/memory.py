@@ -1,5 +1,6 @@
 import os
-from typing import List
+import time
+from typing import List, Dict, Tuple
 from novalm.config.settings import settings
 
 try:
@@ -8,93 +9,99 @@ try:
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
-    print("WARNING: ChromaDB not found. RAG will be disabled/mocked.")
+    print("WARNING: ChromaDB not found. Memory will be disabled.")
 
-class LongTermMemory:
+class AdvancedMemory:
     """
-    Manages Long-Term Episodic Memory (Experiences) and RAG Documents.
+    Advanced Multi-Layer Memory System.
+    Layers:
+    1. Episodic: Past task executions (Goal -> Result).
+    2. Semantic: General knowledge, docs, facts (Concept -> Info).
+    3. Procedural: Heuristics and standard workflows (Trigger -> Routine).
     """
     def __init__(self):
         self.client = None
-        self.doc_collection = None
-        self.exp_collection = None
+        self.episodic = None
+        self.semantic = None
+        self.procedural = None
         
         if CHROMA_AVAILABLE:
             # Persistent storage
             self.client = chromadb.PersistentClient(path="./data/chroma")
             self.ef = embedding_functions.DefaultEmbeddingFunction()
             
-            # Collection for RAG Documents
-            self.doc_collection = self.client.get_or_create_collection(
-                name="novalm_rag",
+            # 1. Episodic (Formerly 'experiences')
+            self.episodic = self.client.get_or_create_collection(
+                name="episodic_memory",
                 embedding_function=self.ef
             )
             
-            # Collection for Experiences (Task -> Solution)
-            self.exp_collection = self.client.get_or_create_collection(
-                name="novalm_experiences",
+            # 2. Semantic (Formerly 'docs')
+            self.semantic = self.client.get_or_create_collection(
+                name="semantic_memory",
+                embedding_function=self.ef
+            )
+            
+            # 3. Procedural (New)
+            self.procedural = self.client.get_or_create_collection(
+                name="procedural_memory",
                 embedding_function=self.ef
             )
 
-    def add_documents(self, documents: List[str], metadatas: List[dict] = None):
-        """Adds RAG documents."""
-        if not self.doc_collection: return
-        ids = [str(hash(doc)) for doc in documents]
-        self.doc_collection.add(documents=documents, metadatas=metadatas, ids=ids)
-
-    def retrieve_documents(self, query: str, n_results: int = 3) -> List[str]:
-        """Retrieves RAG documents."""
-        if not self.doc_collection: return []
-        results = self.doc_collection.query(query_texts=[query], n_results=n_results)
-        if results and results["documents"]:
-            return results["documents"][0]
-        return []
-
-    def add_experience(self, task: str, solution: str, outcome: str, feedback: str = ""):
-        """
-        Stores an experience (Task, Code/Solution, Outcome, Feedback).
-        Outcome: 'SUCCESS' or 'FAILURE'
-        """
-        if not self.exp_collection: return
-        
-        # Format the memory document
-        # We index the TASK so we can find it again when faced with similar tasks.
-        # But we verify if we should also store the solution in the text to search?
-        # Usually we search by Task Query.
+    # --- EPISODIC (Past Runs) ---
+    def add_episodic(self, task: str, solution: str, outcome: str, feedback: str = ""):
+        if not self.episodic: return
         
         document = f"Task: {task}\nResult: {outcome}\nSolution:\n{solution}\nFeedback: {feedback}"
+        meta = {"outcome": outcome, "timestamp": time.time(), "type": "episodic"}
+        # Unique ID based on task hash + timestamp
+        uid = f"epi_{hash(task)}_{int(time.time())}"
         
-        # Meta for filtering if needed
-        meta = {"outcome": outcome, "timestamp": str(os.path.getmtime(settings.MODEL_PATH) if os.path.exists(settings.MODEL_PATH) else 0)} 
-        # timestamp is just a placeholder, ideally use time.time() but avoiding new imports if possible. 
-        # Actually I can import time or datetime.
-        import time
-        meta["timestamp"] = time.time()
-        
-        # ID
-        experience_id = f"exp_{hash(document)}_{int(time.time())}"
-        
-        self.exp_collection.add(
-            documents=[document],
-            metadatas=[meta],
-            ids=[experience_id]
-        )
-        print(f"Memory: Saved experience ({outcome})")
+        self.episodic.add(documents=[document], metadatas=[meta], ids=[uid])
+        print(f"Memory (Episodic): Saved '{task[:30]}...' ({outcome})")
 
-    def retrieve_experiences(self, task: str, n_results: int = 2) -> List[str]:
-        """
-        Retrieves relevant past experiences for a task.
-        """
-        if not self.exp_collection: return []
-        
-        results = self.exp_collection.query(
-            query_texts=[task],
-            n_results=n_results
-        )
-        
-        if results and results["documents"]:
-            return results["documents"][0]
-        return []
+    def retrieve_episodic(self, query: str, n=2) -> List[str]:
+        if not self.episodic: return []
+        res = self.episodic.query(query_texts=[query], n_results=n)
+        return res["documents"][0] if res and res["documents"] else []
 
-# Backward compatibility alias if needed, but we will update Orchestrator
-VectorMemory = LongTermMemory
+    # --- SEMANTIC (Knowledge) ---
+    def add_semantic(self, content: str, source: str = "manual"):
+        if not self.semantic: return
+        uid = f"sem_{hash(content)}_{int(time.time())}"
+        self.semantic.add(documents=[content], metadatas=[{"source": source, "timestamp": time.time()}], ids=[uid])
+        print(f"Memory (Semantic): Saved content from {source}")
+
+    def retrieve_semantic(self, query: str, n=2) -> List[str]:
+        if not self.semantic: return []
+        res = self.semantic.query(query_texts=[query], n_results=n)
+        return res["documents"][0] if res and res["documents"] else []
+
+    # --- PROCEDURAL (Workflows/Heuristics) ---
+    def add_procedural(self, trigger: str, routine: str):
+        """
+        Trigger: When to use this (e.g. "Handling Deadlocks")
+        Routine: The steps/workflow.
+        """
+        if not self.procedural: return
+        document = f"Context: {trigger}\nWorkflow:\n{routine}"
+        uid = f"proc_{hash(trigger)}_{int(time.time())}"
+        self.procedural.add(documents=[document], metadatas=[{"trigger": trigger, "timestamp": time.time()}], ids=[uid])
+        print(f"Memory (Procedural): Saved workflow for '{trigger}'")
+
+    def retrieve_procedural(self, query: str, n=2) -> List[str]:
+        if not self.procedural: return []
+        res = self.procedural.query(query_texts=[query], n_results=n)
+        return res["documents"][0] if res and res["documents"] else []
+
+    # --- AGGREGATE ---
+    def retrieve_all(self, query: str) -> Dict[str, List[str]]:
+        return {
+            "episodic": self.retrieve_episodic(query),
+            "semantic": self.retrieve_semantic(query),
+            "procedural": self.retrieve_procedural(query)
+        }
+
+# Alias for compatibility during refactor if needed, 
+# although we should update consumers.
+VectorMemory = AdvancedMemory
