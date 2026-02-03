@@ -15,6 +15,12 @@ class SamplingParams(BaseModel):
     frequency_penalty: float = 0.0
     stop: Optional[Union[str, List[str]]] = None
     ignore_eos: bool = False
+    
+    # Execution Mode Presets
+    preset: Optional[Literal["creative", "deterministic", "coding", "research"]] = None
+    
+    # Self-Correction
+    max_debug_attempts: int = 3
 
 class ChatCompletionRequest(BaseModel):
     model: str
@@ -28,6 +34,9 @@ class ChatCompletionRequest(BaseModel):
     
     # Structured Output
     response_format: Optional[Dict[str, str]] = None # e.g. {"type": "json_object"}
+    
+    # Evaluation / Self-Correction
+    test_code: Optional[str] = None # Code to run to verify the answer
     
     # Allow extra fields for flexibility but validate the core ones
     class Config:
