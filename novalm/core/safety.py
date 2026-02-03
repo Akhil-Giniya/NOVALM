@@ -8,10 +8,11 @@ class SafetyLayer:
     
     def __init__(self):
         # Simple regex for demonstration. In production, load classifiers here.
-        # Blocking explicit keywords for MVP
+    def __init__(self):
+        # Blocking explicit keywords (MVP) - Using word boundaries for safety
         self.blocked_patterns = [
-            re.compile(r"badword", re.IGNORECASE),
-            re.compile(r"failmode", re.IGNORECASE),
+            re.compile(r"\bbadword\b", re.IGNORECASE),
+            re.compile(r"\bfailmode\b", re.IGNORECASE),
         ]
         
         # Heuristics for Prompt Injection

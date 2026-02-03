@@ -25,13 +25,24 @@ class VLLMInferenceEngine(InferenceEngine):
         Explicit initialization logic.
         Fails FAST if CUDA is not available.
         """
+        if self.engine:
+            print("vLLM Engine already initialized.")
+            return
+
         if not VLLM_AVAILABLE:
             raise RuntimeError("vLLM is not installed. Cannot start VLLMInferenceEngine.")
             
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available. vLLM requires a GPU.")
+             # Strict enforcement as requested
+            raise RuntimeError("CRITICAL: CUDA is not available. NovaLM requires a GPU to run. Aborting.")
 
         print(f"Initializing vLLM Engine with model: {settings.MODEL_PATH}...")
+        
+        # Helper to check model path existence
+        if not os.path.exists(settings.MODEL_PATH) and not settings.MODEL_PATH.startswith("facebook/") and not settings.MODEL_PATH.startswith("meta-llama/"):
+             # Simple heuristic, usually local paths should exist. HuggingFace IDs are fine.
+             # Only warn for now as it might be a HuggingFace ID.
+             print(f"WARNING: Model path {settings.MODEL_PATH} not found locally. Assuming HuggingFace Hub ID.")
         
         engine_args = AsyncEngineArgs(
             model=settings.MODEL_PATH,

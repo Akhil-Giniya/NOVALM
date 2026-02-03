@@ -113,36 +113,51 @@ class Orchestrator:
         
         token_count = 0
 
-        async for text_chunk in self.inference_engine.generate(prompt, sampling_params, request_id):
-            
-            # Post-Inference Safety Check (Streaming)
-            if settings.ENABLE_SAFETY_CHECKS:
-                text_chunk = self.safety_layer.check_output(text_chunk)
-            
-            # Update Metrics
-            # vLLM usually sends 1 token per chunk in streaming.
-            GENERATED_TOKENS_TOTAL.labels(model=model_name).inc()
-            token_count += 1
-            
-            # Construct Response Chunk
-            chunk_data = ChatCompletionResponseChunk(
-                id=request_id,
-                created=created_time,
-                model=model_name,
-                choices=[{
-                    "index": 0,
-                    "delta": {"content": text_chunk},
-                    "finish_reason": None
-                }]
-            )
-            
-            # Yield formatted SSE data
-            yield chunk_data
+        try:
+            async for text_chunk in self.inference_engine.generate(prompt, sampling_params, request_id):
+                
+                # Post-Inference Safety Check (Streaming)
+                if settings.ENABLE_SAFETY_CHECKS:
+                    text_chunk = self.safety_layer.check_output(text_chunk)
+                
+                # Update Metrics
+                GENERATED_TOKENS_TOTAL.labels(model=model_name).inc()
+                token_count += 1
+                
+                # Construct Response Chunk
+                chunk_data = ChatCompletionResponseChunk(
+                    id=request_id,
+                    created=created_time,
+                    model=model_name,
+                    choices=[{
+                        "index": 0,
+                        "delta": {"content": text_chunk},
+                        "finish_reason": None
+                    }]
+                )
+                
+                # Yield formatted SSE data
+                yield chunk_data
+                
+        except Exception as e:
+            import logging
+            logging.error(f"Error during inference: {e}")
+            # Yield an error chunk or specific error event
+            # For OpenAI compatibility, we often just finish or send a content saying error, 
+            # but let's try to send a JSON error if client parses it.
+            error_chunk = {
+                "error": {
+                    "message": f"Internal Server Error: {str(e)}",
+                    "type": "internal_error",
+                    "code": 500
+                }
+            }
+            # Note: This might break strict input parsers expecting ChatCompletionResponseChunk
+            # But it's better than hanging.
+            yield error_chunk
 
         # Logging Usage (Structured)
         import logging
-        # We don't have API key here directly, usually passed in context or assumption. 
-        # But logs are useful anyway.
         logging.info(f"USAGE: request_id={request_id} model={model_name} tokens={token_count}")
 
         # Yield [DONE] is usually handled by the transport layer or a specific sentinel
