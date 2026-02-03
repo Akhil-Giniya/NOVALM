@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  novalm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=NovaLM
+      - MODEL_PATH=${MODEL_PATH:-/models/opt-125m}
+      - API_KEY=${API_KEY:-dev-key}
+      - ALLOW_MOCK_INFERENCE=${ALLOW_MOCK_INFERENCE:-True}
+      - REDIS_URL=redis://redis:6379
+      - CUDA_VISIBLE_DEVICES=0
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    volumes:
+      # Map local models folder to container if needed
+      - ./models:/models
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: asked
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'

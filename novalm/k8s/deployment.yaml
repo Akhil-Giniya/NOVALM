@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: novalm-deployment
+  labels:
+    app: novalm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: novalm
+  template:
+    metadata:
+      labels:
+        app: novalm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: novalm
+        image: novalm:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: APP_NAME
+          value: "NovaLM-Production"
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: novalm-secrets
+              key: api-key
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: MODEL_PATH
+          value: "/models/llama-2-7b"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: model-volume
+          mountPath: /models
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: model-volume
+        hostPath:
+          path: /mnt/models
