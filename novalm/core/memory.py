@@ -1,7 +1,11 @@
 import os
 import time
+import logging
+import hashlib
 from typing import List, Dict, Tuple
 from novalm.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     import chromadb
@@ -9,7 +13,7 @@ try:
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
-    print("WARNING: ChromaDB not found. Memory will be disabled.")
+    logger.warning("ChromaDB not found. Memory will be disabled.")
 
 class AdvancedMemory:
     """
@@ -26,27 +30,34 @@ class AdvancedMemory:
         self.procedural = None
         
         if CHROMA_AVAILABLE:
-            # Persistent storage
-            self.client = chromadb.PersistentClient(path="./data/chroma")
-            self.ef = embedding_functions.DefaultEmbeddingFunction()
-            
-            # 1. Episodic (Formerly 'experiences')
-            self.episodic = self.client.get_or_create_collection(
-                name="episodic_memory",
-                embedding_function=self.ef
-            )
-            
-            # 2. Semantic (Formerly 'docs')
-            self.semantic = self.client.get_or_create_collection(
-                name="semantic_memory",
-                embedding_function=self.ef
-            )
-            
-            # 3. Procedural (New)
-            self.procedural = self.client.get_or_create_collection(
-                name="procedural_memory",
-                embedding_function=self.ef
-            )
+            try:
+                # Persistent storage
+                self.client = chromadb.PersistentClient(path="./data/chroma")
+                self.ef = embedding_functions.DefaultEmbeddingFunction()
+                
+                # 1. Episodic (Formerly 'experiences')
+                self.episodic = self.client.get_or_create_collection(
+                    name="episodic_memory",
+                    embedding_function=self.ef
+                )
+                
+                # 2. Semantic (Formerly 'docs')
+                self.semantic = self.client.get_or_create_collection(
+                    name="semantic_memory",
+                    embedding_function=self.ef
+                )
+                
+                # 3. Procedural (New)
+                self.procedural = self.client.get_or_create_collection(
+                    name="procedural_memory",
+                    embedding_function=self.ef
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize ChromaDB: {e}")
+                
+    def _generate_id(self, content: str) -> str:
+        """Stable ID generation using SHA-256."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
     # --- EPISODIC (Past Runs) ---
     def add_episodic(self, task: str, solution: str, outcome: str, feedback: str = ""):
@@ -55,10 +66,10 @@ class AdvancedMemory:
         document = f"Task: {task}\nResult: {outcome}\nSolution:\n{solution}\nFeedback: {feedback}"
         meta = {"outcome": outcome, "timestamp": time.time(), "type": "episodic"}
         # Unique ID based on task hash + timestamp
-        uid = f"epi_{hash(task)}_{int(time.time())}"
+        uid = f"epi_{self._generate_id(task)}_{int(time.time())}"
         
         self.episodic.add(documents=[document], metadatas=[meta], ids=[uid])
-        print(f"Memory (Episodic): Saved '{task[:30]}...' ({outcome})")
+        logger.info(f"Memory (Episodic): Saved '{task[:30]}...' ({outcome})")
 
     def retrieve_episodic(self, query: str, n=2) -> List[str]:
         if not self.episodic: return []
@@ -68,9 +79,9 @@ class AdvancedMemory:
     # --- SEMANTIC (Knowledge) ---
     def add_semantic(self, content: str, source: str = "manual"):
         if not self.semantic: return
-        uid = f"sem_{hash(content)}_{int(time.time())}"
+        uid = f"sem_{self._generate_id(content)}_{int(time.time())}"
         self.semantic.add(documents=[content], metadatas=[{"source": source, "timestamp": time.time()}], ids=[uid])
-        print(f"Memory (Semantic): Saved content from {source}")
+        logger.info(f"Memory (Semantic): Saved content from {source}")
 
     def retrieve_semantic(self, query: str, n=2) -> List[str]:
         if not self.semantic: return []
@@ -85,9 +96,9 @@ class AdvancedMemory:
         """
         if not self.procedural: return
         document = f"Context: {trigger}\nWorkflow:\n{routine}"
-        uid = f"proc_{hash(trigger)}_{int(time.time())}"
+        uid = f"proc_{self._generate_id(trigger)}_{int(time.time())}"
         self.procedural.add(documents=[document], metadatas=[{"trigger": trigger, "timestamp": time.time()}], ids=[uid])
-        print(f"Memory (Procedural): Saved workflow for '{trigger}'")
+        logger.info(f"Memory (Procedural): Saved workflow for '{trigger}'")
 
     def retrieve_procedural(self, query: str, n=2) -> List[str]:
         if not self.procedural: return []
@@ -102,6 +113,5 @@ class AdvancedMemory:
             "procedural": self.retrieve_procedural(query)
         }
 
-# Alias for compatibility during refactor if needed, 
-# although we should update consumers.
+# Alias for compatibility
 VectorMemory = AdvancedMemory

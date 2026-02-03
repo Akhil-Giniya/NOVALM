@@ -8,6 +8,19 @@ class InferenceEngine(ABC):
     Enforces a strict contract for all inference backends (vLLM, HuggingFace, Mock, etc).
     """
     
+    async def initialize(self):
+        """
+        Initializes the engine (loading models, allocating resources).
+        Should be calling before generate() is used.
+        """
+        pass
+
+    async def shutdown(self):
+        """
+        Cleans up resources (GPU memory, connections) before exit.
+        """
+        pass
+
     @abstractmethod
     async def generate(
         self, 

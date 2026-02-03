@@ -19,9 +19,10 @@ async def lifespan(app: FastAPI):
         # We explicitly initialize the VLLM engine here
         # This handles the heavy loading of the model
         try:
-            inference_engine.initialize()
+            await inference_engine.initialize()
         except RuntimeError as e:
-            print(f"CRITICAL: Failed to initialize VLLM Engine: {e}")
+            import logging
+            logging.error(f"CRITICAL: Failed to initialize VLLM Engine: {e}")
             # We intentionally let this fail the startup if strictly required
             raise e
             
@@ -38,7 +39,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     print("Shutting down NovaLM...")
-    # Clean up resources if needed
+    if hasattr(inference_engine, "shutdown"):
+        await inference_engine.shutdown()
 
 app = FastAPI(
     title=settings.APP_NAME,
