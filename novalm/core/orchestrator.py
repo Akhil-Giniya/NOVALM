@@ -19,6 +19,9 @@ class Orchestrator:
         self.safety_layer = safety_layer
         self.memory = VectorMemory() # Initialize Memory
         
+        from novalm.core.cache import CacheManager
+        self.cache_manager = CacheManager()
+        
     def _assemble_prompt(self, messages, tools=None) -> str:
         """
         Converts list of messages to a single prompt string.
@@ -44,7 +47,7 @@ class Orchestrator:
             # Only retrieve if we have a query.
             experiences = self.memory.retrieve_experiences(latest_query)
             if experiences:
-                experience_str = "\nRELEVANT PAST EXPERIENCES:\n" + "\n".join(experiences) + "\n"
+                experience_str = "\nNOVELTY CHECK - EXISTING KNOWLEDGE:\n" + "\n".join(experiences) + "\n(Warning: Do not simply repeat these if they failed. If they succeeded, try to improve or apply to new context.)\n"
         
         # 3. Prepare Tools Prompt
         tools_str = ""
@@ -191,29 +194,58 @@ class Orchestrator:
             token_count = 0
             collected_response = ""
             
-            try:
-                async for text_chunk in self.inference_engine.generate(prompt, sampling_params, request_id_step):
-                    # Safety
-                    if settings.ENABLE_SAFETY_CHECKS:
-                        text_chunk = self.safety_layer.check_output(text_chunk)
-                    
-                    # Accumulate for tool parsing
-                    collected_response += text_chunk
-                    token_count += 1
-                    GENERATED_TOKENS_TOTAL.labels(model=model_name).inc()
-                    
-                    # Yield chunk to user
-                    yield ChatCompletionResponseChunk(
+            # CACHE CHECK
+            # Only cache if NOT in strict agent execution loop with side-effects? 
+            # Actually, safe to cache generation if prompt is same.
+            cached_text = None
+            if self.cache_manager:
+                 cached_text = self.cache_manager.get(prompt, sampling_params)
+            
+            if cached_text:
+                # HIT: Yield immediately
+                collected_response = cached_text
+                yield ChatCompletionResponseChunk(
                         id=request_id,
                         created=created_time,
                         model=model_name,
-                        choices=[{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                        choices=[{"index": 0, "delta": {"content": cached_text}, "finish_reason": "stop"}]
                     )
-            except Exception as e:
-                 import logging
-                 logging.error(f"Inference error: {e}")
-                 yield self._error_chunk(request_id, str(e))
-                 return
+            else:
+                # MISS: Run Inference
+                try:
+                    async for text_chunk in self.inference_engine.generate(prompt, sampling_params, request_id_step):
+                        # Safety
+                        if settings.ENABLE_SAFETY_CHECKS:
+                            text_chunk = self.safety_layer.check_output(text_chunk)
+                        
+                        # Accumulate for tool parsing
+                        collected_response += text_chunk
+                        token_count += 1
+                        GENERATED_TOKENS_TOTAL.labels(model=model_name).inc()
+                        
+                        # Yield chunk to user
+                        yield ChatCompletionResponseChunk(
+                            id=request_id,
+                            created=created_time,
+                            model=model_name,
+                            choices=[{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                        )
+                    
+                    # CACHE SET
+                    if self.cache_manager and collected_response:
+                        self.cache_manager.set(prompt, collected_response, sampling_params)
+                        
+                except Exception as e:
+                     import logging
+                     logging.error(f"Inference error: {e}")
+                     yield self._error_chunk(request_id, str(e))
+                     return
+
+            if not is_agent_mode:
+                break # Simple chat, done after one turn using break logic above, 
+                # but we need to verify indentation. 
+                # The 'if not is_agent_mode: break' is currently AFTER the try/except block.
+                # Correct.
 
             if not is_agent_mode:
                 break # Simple chat, done after one turn
